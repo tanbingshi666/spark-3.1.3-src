@@ -24,7 +24,7 @@ import org.apache.spark.SparkConf
 /**
  * Entry point for a Spark application. Implementations must provide a no-argument constructor.
  */
-private[spark] trait SparkApplication {
+private[spark] trait  SparkApplication {
 
   def start(args: Array[String], conf: SparkConf): Unit
 
@@ -43,12 +43,10 @@ private[deploy] class JavaMainApplication(klass: Class[_]) extends SparkApplicat
     if (!Modifier.isStatic(mainMethod.getModifiers)) {
       throw new IllegalStateException("The main method in the given main class must be static")
     }
-
     val sysProps = conf.getAll.toMap
     sysProps.foreach { case (k, v) =>
       sys.props(k) = v
     }
-
     mainMethod.invoke(null, args)
   }
 

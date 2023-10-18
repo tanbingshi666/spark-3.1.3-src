@@ -199,6 +199,7 @@ object UnifiedMemoryManager {
 
   def apply(conf: SparkConf, numCores: Int): UnifiedMemoryManager = {
     val maxMemory = getMaxMemory(conf)
+    // 创建统一内存管理 UnifiedMemoryManager
     new UnifiedMemoryManager(
       conf,
       maxHeapMemory = maxMemory,

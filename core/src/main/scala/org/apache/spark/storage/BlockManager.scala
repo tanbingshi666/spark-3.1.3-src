@@ -478,8 +478,7 @@ private[spark] class BlockManager(
       ret
     }
 
-    val id =
-      BlockManagerId(executorId, blockTransferService.hostName, blockTransferService.port, None)
+    val id = BlockManagerId(executorId, blockTransferService.hostName, blockTransferService.port, None)
 
     val idFromMaster = master.registerBlockManager(
       id,

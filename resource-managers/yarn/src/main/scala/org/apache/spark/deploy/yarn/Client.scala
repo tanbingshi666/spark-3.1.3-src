@@ -63,35 +63,50 @@ import org.apache.spark.rpc.RpcEnv
 import org.apache.spark.util.{CallerContext, Utils, YarnContainerInfoHelper}
 
 private[spark] class Client(
-    val args: ClientArguments,
-    val sparkConf: SparkConf,
-    val rpcEnv: RpcEnv)
-  extends Logging {
+                             val args: ClientArguments,
+                             val sparkConf: SparkConf,
+                             val rpcEnv: RpcEnv) extends Logging {
 
   import Client._
   import YarnSparkHadoopUtil._
 
+  // 1 创建 Yarn ResourceManager RPC 服务 ClientRMService 的客户端代理 YarnClientImpl
+  // 网络通讯协议为 ApplicationClientProtocol
   private val yarnClient = YarnClient.createYarnClient
+
+  // 2 加载 hadoop (hdfs/yarn) 配置
   private val hadoopConf = new YarnConfiguration(SparkHadoopUtil.newConfiguration(sparkConf))
 
+  // 3 程序任务部署集群模式
   private val isClusterMode = sparkConf.get(SUBMIT_DEPLOY_MODE) == "cluster"
 
   private val isClientUnmanagedAMEnabled = sparkConf.get(YARN_UNMANAGED_AM) && !isClusterMode
+
+  // 4 程序任务的 ApplicationMaster
   private var appMaster: ApplicationMaster = _
+
+  // 5 stage 目录
   private var stagingDirPath: Path = _
 
   // AM related configurations
+  // 6 ApplicationMaster/Driver 的配置信息
+  // 6.1 获取 Driver 内存
   private val amMemory = if (isClusterMode) {
     sparkConf.get(DRIVER_MEMORY).toInt
   } else {
     sparkConf.get(AM_MEMORY).toInt
   }
+
+  // 6.2 Driver 堆外内存
+  // Driver 内存 * 0.1 与 384MB 比较取最大值
   private val amMemoryOverhead = {
     val amMemoryOverheadEntry = if (isClusterMode) DRIVER_MEMORY_OVERHEAD else AM_MEMORY_OVERHEAD
     sparkConf.get(amMemoryOverheadEntry).getOrElse(
       math.max((MEMORY_OVERHEAD_FACTOR * amMemory).toLong,
         ResourceProfile.MEMORY_OVERHEAD_MIN_MIB)).toInt
   }
+
+  // 6.3 Driver 的 core 数
   private val amCores = if (isClusterMode) {
     sparkConf.get(DRIVER_CORES)
   } else {
@@ -99,9 +114,13 @@ private[spark] class Client(
   }
 
   // Executor related configurations
+  // 7 executor 配置信息
+  // 7.1 executor 内存
   private val executorMemory = sparkConf.get(EXECUTOR_MEMORY)
   // Executor offHeap memory in MiB.
   protected val executorOffHeapMemory = Utils.executorOffHeapMemorySizeAsMb(sparkConf)
+  // 7.2 executor 堆外内存
+  // executor 内存 * 0.1 与 384 MB 比较取最大值
   private val executorMemoryOverhead = sparkConf.get(EXECUTOR_MEMORY_OVERHEAD).getOrElse(
     math.max((MEMORY_OVERHEAD_FACTOR * executorMemory).toLong,
       ResourceProfile.MEMORY_OVERHEAD_MIN_MIB)).toInt
@@ -113,6 +132,7 @@ private[spark] class Client(
     0
   }
 
+  // 8 分别创建 ClientDistributedCacheManager、SparkConf
   private val distCacheMgr = new ClientDistributedCacheManager()
   private val cachedResourcesConf = new SparkConf(false)
 
@@ -131,6 +151,7 @@ private[spark] class Client(
 
   require(keytab == null || !Utils.isLocalUri(keytab), "Keytab should reference a local file.")
 
+  // 9 创建 LauncherBackend
   private val launcherBackend = new LauncherBackend() {
     override protected def conf: SparkConf = sparkConf
 
@@ -145,6 +166,7 @@ private[spark] class Client(
   }
   private val fireAndForget = isClusterMode && !sparkConf.get(WAIT_FOR_APP_COMPLETION)
 
+  // 10 程序任务 ApplicationId
   private var appId: ApplicationId = null
 
   def reportLauncherState(state: SparkAppHandle.State): Unit = {
@@ -167,11 +189,15 @@ private[spark] class Client(
    * available in the alpha API.
    */
   def submitApplication(): ApplicationId = {
+    // 1 创建 Application 内存
     ResourceRequestHelper.validateResources(sparkConf)
 
     var appId: ApplicationId = null
     try {
       launcherBackend.connect()
+
+      // 2 初始化 YarnClientImpl 以及启动
+      // 也即连接 Yarn ResourceManager 的 RPC ClientRMService 服务
       yarnClient.init(hadoopConf)
       yarnClient.start()
 
@@ -179,6 +205,8 @@ private[spark] class Client(
         .format(yarnClient.getYarnClusterMetrics.getNumNodeManagers))
 
       // Get a new application from our RM
+      // 3 向 yarn ResourceManager 的 ClientRMService 申请一个 Application
+      // 也即发送一个 RPC 请求获取 ApplicationId
       val newApp = yarnClient.createApplication()
       val newAppResponse = newApp.getNewApplicationResponse()
       appId = newAppResponse.getApplicationId()
@@ -187,8 +215,11 @@ private[spark] class Client(
       // otherwise based on the users home directory.
       // scalastyle:off FileSystemGet
       val appStagingBaseDir = sparkConf.get(STAGING_DIR)
-        .map { new Path(_, UserGroupInformation.getCurrentUser.getShortUserName) }
+        .map {
+          new Path(_, UserGroupInformation.getCurrentUser.getShortUserName)
+        }
         .getOrElse(FileSystem.get(hadoopConf).getHomeDirectory())
+      // 4 获取 HDFS 的 stage 临时目录
       stagingDirPath = new Path(appStagingBaseDir, getAppStagingDir(appId))
       // scalastyle:on FileSystemGet
 
@@ -196,18 +227,28 @@ private[spark] class Client(
         Option(appId.toString)).setCurrentContext()
 
       // Verify whether the cluster has enough resources for our AM
+      // 5 校验 ApplicationMaster 资源是否符合 yarn node/container 最大值
       verifyClusterResources(newAppResponse)
 
       // Set up the appropriate contexts to launch our AM
+      // 5 创建 ContainerLaunchContext 负责构建启动 ApplicationMaster 命令以及上传相关 jar 到 hdfs 的 stage 目录
+      // 启动 AM 容器类 org.apache.spark.deploy.yarn.ApplicationMaster
       val containerContext = createContainerLaunchContext(newAppResponse)
+
+      // 6 将 ContainerLaunchContext 封装为 ApplicationSubmissionContext
+      // 添加一些 yarn 信息 比如 yarn 队列等
       val appContext = createApplicationSubmissionContext(newApp, containerContext)
 
       // Finally, submit and monitor the application
       logInfo(s"Submitting application $appId to ResourceManager")
+      // 7 向 ResourceManager 发送一个 RPC 请求启动 AM
+      // 最终由 ClientRMService.submitApplication() 处理执行
       yarnClient.submitApplication(appContext)
+
       launcherBackend.setAppId(appId.toString)
       reportLauncherState(SparkAppHandle.State.SUBMITTED)
 
+      // 8 返回 ApplicationId 以便获取任务执行日志
       appId
     } catch {
       case e: Throwable =>
@@ -246,31 +287,38 @@ private[spark] class Client(
    * This uses the YarnClientApplication not available in the Yarn alpha API.
    */
   def createApplicationSubmissionContext(
-      newApp: YarnClientApplication,
-      containerContext: ContainerLaunchContext): ApplicationSubmissionContext = {
+                                          newApp: YarnClientApplication,
+                                          containerContext: ContainerLaunchContext): ApplicationSubmissionContext = {
 
     val componentName = if (isClusterMode) {
       config.YARN_DRIVER_RESOURCE_TYPES_PREFIX
     } else {
       config.YARN_AM_RESOURCE_TYPES_PREFIX
     }
+
     val yarnAMResources = getYarnResourcesAndAmounts(sparkConf, componentName)
     val amResources = yarnAMResources ++
       getYarnResourcesFromSparkResources(SPARK_DRIVER_PREFIX, sparkConf)
+
     logDebug(s"AM resources: $amResources")
+
+    // 1 设置 AM 信息
     val appContext = newApp.getApplicationSubmissionContext
     appContext.setApplicationName(sparkConf.get("spark.app.name", "Spark"))
     appContext.setQueue(sparkConf.get(QUEUE_NAME))
     appContext.setAMContainerSpec(containerContext)
     appContext.setApplicationType(sparkConf.get(APPLICATION_TYPE))
 
+    // 2 设置启动 AM 标签
     sparkConf.get(APPLICATION_TAGS).foreach { tags =>
       appContext.setApplicationTags(new java.util.HashSet[String](tags.asJava))
     }
+
+    // 3 设置重启 AM 次数
     sparkConf.get(MAX_APP_ATTEMPTS) match {
       case Some(v) => appContext.setMaxAppAttempts(v)
       case None => logDebug(s"${MAX_APP_ATTEMPTS.key} is not set. " +
-          "Cluster's default value will be used.")
+        "Cluster's default value will be used.")
     }
 
     sparkConf.get(AM_ATTEMPT_FAILURE_VALIDITY_INTERVAL_MS).foreach { interval =>
@@ -389,12 +437,12 @@ private[spark] class Client(
    * container. Exposed for testing.
    */
   private[yarn] def copyFileToRemote(
-      destDir: Path,
-      srcPath: Path,
-      replication: Short,
-      symlinkCache: Map[URI, Path],
-      force: Boolean = false,
-      destName: Option[String] = None): Path = {
+                                      destDir: Path,
+                                      srcPath: Path,
+                                      replication: Short,
+                                      symlinkCache: Map[URI, Path],
+                                      force: Boolean = false,
+                                      destName: Option[String] = None): Path = {
     val destFs = destDir.getFileSystem(hadoopConf)
     val srcFs = srcPath.getFileSystem(hadoopConf)
     var destPath = srcPath
@@ -425,8 +473,8 @@ private[spark] class Client(
    * Exposed for testing.
    */
   def prepareLocalResources(
-      destDir: Path,
-      pySparkArchives: Seq[String]): HashMap[String, LocalResource] = {
+                             destDir: Path,
+                             pySparkArchives: Seq[String]): HashMap[String, LocalResource] = {
     logInfo("Preparing resources for our AM container")
     // Upload Spark and the application JAR to the remote file system if necessary,
     // and add them as local resources to the application master.
@@ -481,11 +529,11 @@ private[spark] class Client(
      *         The localized path will be null if the URI has already been added to the cache.
      */
     def distribute(
-        path: String,
-        resType: LocalResourceType = LocalResourceType.FILE,
-        destName: Option[String] = None,
-        targetDir: Option[String] = None,
-        appMasterOnly: Boolean = false): (Boolean, String) = {
+                    path: String,
+                    resType: LocalResourceType = LocalResourceType.FILE,
+                    destName: Option[String] = None,
+                    targetDir: Option[String] = None,
+                    appMasterOnly: Boolean = false): (Boolean, String) = {
       val trimmedPath = path.trim()
       val localURI = Utils.resolveURI(trimmedPath)
       if (localURI.getScheme != Utils.LOCAL_SCHEME) {
@@ -521,9 +569,9 @@ private[spark] class Client(
     /**
      * Add Spark to the cache. There are two settings that control what files to add to the cache:
      * - if a Spark archive is defined, use the archive. The archive is expected to contain
-     *   jar files at its root directory.
+     * jar files at its root directory.
      * - if a list of jars is provided, filter the non-local ones, resolve globs, and
-     *   add the found files to the cache.
+     * add the found files to the cache.
      *
      * Note that the archive cannot be a "local" URI. If none of the above settings are found,
      * then upload all files found in $SPARK_HOME/jars.
@@ -608,9 +656,9 @@ private[spark] class Client(
     /**
      * Do the same for any additional resources passed in through ClientArguments.
      * Each resource category is represented by a 3-tuple of:
-     *   (1) comma separated list of resources in this category,
-     *   (2) resource type, and
-     *   (3) whether to add these resources to the classpath
+     * (1) comma separated list of resources in this category,
+     * (2) resource type, and
+     * (3) whether to add these resources to the classpath
      */
     val cachedSecondaryJarLinks = ListBuffer.empty[String]
     List(
@@ -759,9 +807,9 @@ private[spark] class Client(
       // Also upload metrics.properties to distributed cache if exists in classpath.
       // If user specify this file using --files then executors will use the one
       // from --files instead.
-      for { prop <- Seq("log4j.properties", "metrics.properties")
-            url <- Option(Utils.getContextOrSparkClassLoader.getResource(prop))
-            if url.getProtocol == "file" } {
+      for {prop <- Seq("log4j.properties", "metrics.properties")
+           url <- Option(Utils.getContextOrSparkClassLoader.getResource(prop))
+           if url.getProtocol == "file"} {
         val file = new File(url.getPath())
         confStream.putNextEntry(new ZipEntry(file.getName()))
         Files.copy(file, confStream)
@@ -808,8 +856,8 @@ private[spark] class Client(
    * Set up the environment for launching our ApplicationMaster container.
    */
   private def setupLaunchEnv(
-      stagingDirPath: Path,
-      pySparkArchives: Seq[String]): HashMap[String, String] = {
+                              stagingDirPath: Path,
+                              pySparkArchives: Seq[String]): HashMap[String, String] = {
     logInfo("Setting up the launch environment for our AM container")
     val env = new HashMap[String, String]()
     populateClasspath(args, hadoopConf, sparkConf, env, sparkConf.get(DRIVER_CLASS_PATH))
@@ -873,9 +921,12 @@ private[spark] class Client(
    * This sets up the launch environment, java options, and the command for launching the AM.
    */
   private def createContainerLaunchContext(newAppResponse: GetNewApplicationResponse)
-    : ContainerLaunchContext = {
+  : ContainerLaunchContext = {
     logInfo("Setting up container launch context for our AM")
+
+    // 1 获取 ApplicationId
     val appId = newAppResponse.getApplicationId
+
     val pySparkArchives =
       if (sparkConf.get(IS_PYTHON_APP)) {
         findPySparkArchives()
@@ -883,9 +934,12 @@ private[spark] class Client(
         Nil
       }
 
+    // 2 设置环境变量
     val launchEnv = setupLaunchEnv(stagingDirPath, pySparkArchives)
+    // 3 上传相关 jar 到 hdfs 的 stage 目录
     val localResources = prepareLocalResources(stagingDirPath, pySparkArchives)
 
+    // 4 创建 ContainerLaunchContext
     val amContainer = Records.newRecord(classOf[ContainerLaunchContext])
     amContainer.setLocalResources(localResources.asJava)
     amContainer.setEnvironment(launchEnv.asJava)
@@ -897,8 +951,10 @@ private[spark] class Client(
     var prefixEnv: Option[String] = None
 
     // Add Xmx for AM memory
+    // 5 构建 ApplicationMaster 堆内存
     javaOpts += "-Xmx" + amMemory + "m"
 
+    // 6 构建 ApplicationMaster 临时目录
     val tmpDir = new Path(Environment.PWD.$$(), YarnConfiguration.DEFAULT_CONTAINER_TEMP_DIR)
     javaOpts += "-Djava.io.tmpdir=" + tmpDir
 
@@ -909,6 +965,7 @@ private[spark] class Client(
     // Instead of using this, rely on cpusets by YARN to enforce "proper" Spark behavior in
     // multi-tenant environments. Not sure how default Java GC behaves if it is limited to subset
     // of cores on a node.
+    // 7 判断启动 ApplicationMaster 是否启动 CMS 垃圾回收器
     val useConcurrentAndIncrementalGC = launchEnv.get("SPARK_USE_CONC_INCR_GC").exists(_.toBoolean)
     if (useConcurrentAndIncrementalGC) {
       // In our expts, using (default) throughput collector has severe perf ramifications in
@@ -923,6 +980,7 @@ private[spark] class Client(
     }
 
     // Include driver-specific java options if we are launching a driver
+    // 8 添加额外用户指定的 java 参数
     if (isClusterMode) {
       sparkConf.get(DRIVER_JAVA_OPTIONS).foreach { opts =>
         javaOpts ++= Utils.splitCommandString(opts)
@@ -960,14 +1018,18 @@ private[spark] class Client(
     }
 
     // For log4j configuration to reference
+    // 9 log4j 配置文件
     javaOpts += ("-Dspark.yarn.app.container.log.dir=" + ApplicationConstants.LOG_DIR_EXPANSION_VAR)
 
+    // 10 用户 class 参数
     val userClass =
       if (isClusterMode) {
         Seq("--class", YarnSparkHadoopUtil.escapeForShell(args.userClass))
       } else {
         Nil
       }
+
+    // 11 用户 jar 参数
     val userJar =
       if (args.userJar != null) {
         Seq("--jar", args.userJar)
@@ -986,6 +1048,8 @@ private[spark] class Client(
       } else {
         Nil
       }
+
+    // 12 am 启动类
     val amClass =
       if (isClusterMode) {
         Utils.classForName("org.apache.spark.deploy.yarn.ApplicationMaster").getName
@@ -993,20 +1057,25 @@ private[spark] class Client(
         Utils.classForName("org.apache.spark.deploy.yarn.ExecutorLauncher").getName
       }
     if (args.primaryRFile != null &&
-        (args.primaryRFile.endsWith(".R") || args.primaryRFile.endsWith(".r"))) {
+      (args.primaryRFile.endsWith(".R") || args.primaryRFile.endsWith(".r"))) {
       args.userArgs = ArrayBuffer(args.primaryRFile) ++ args.userArgs
     }
+
+    // 13 用户程序入口参数
     val userArgs = args.userArgs.flatMap { arg =>
       Seq("--arg", YarnSparkHadoopUtil.escapeForShell(arg))
     }
+
+    // 14 ApplicationMaster 程序入口参数
     val amArgs =
       Seq(amClass) ++ userClass ++ userJar ++ primaryPyFile ++ primaryRFile ++ userArgs ++
-      Seq("--properties-file",
-        buildPath(Environment.PWD.$$(), LOCALIZED_CONF_DIR, SPARK_CONF_FILE)) ++
-      Seq("--dist-cache-conf",
-        buildPath(Environment.PWD.$$(), LOCALIZED_CONF_DIR, DIST_CACHE_CONF_FILE))
+        Seq("--properties-file",
+          buildPath(Environment.PWD.$$(), LOCALIZED_CONF_DIR, SPARK_CONF_FILE)) ++
+        Seq("--dist-cache-conf",
+          buildPath(Environment.PWD.$$(), LOCALIZED_CONF_DIR, DIST_CACHE_CONF_FILE))
 
     // Command for the ApplicationMaster
+    // 15 构建 ApplicationMaster 命令
     val commands = prefixEnv ++
       Seq(Environment.JAVA_HOME.$$() + "/bin/java", "-server") ++
       javaOpts ++ amArgs ++
@@ -1016,6 +1085,7 @@ private[spark] class Client(
 
     // TODO: it would be nicer to just make sure there are no null commands here
     val printableCommands = commands.map(s => if (s == null) "null" else s).toList
+    // 16 AM 容器执行启动命令
     amContainer.setCommands(printableCommands.asJava)
 
     logDebug("===============================================================================")
@@ -1028,7 +1098,7 @@ private[spark] class Client(
       }
     }
     logDebug("    resources:")
-    localResources.foreach { case (k, v) => logDebug(s"        $k -> $v")}
+    localResources.foreach { case (k, v) => logDebug(s"        $k -> $v") }
     logDebug("    command:")
     logDebug(s"        ${printableCommands.mkString(" ")}")
     logDebug("===============================================================================")
@@ -1047,17 +1117,17 @@ private[spark] class Client(
    * KILLED, or RUNNING) and the final application state (UNDEFINED, SUCCEEDED, FAILED,
    * or KILLED).
    *
-   * @param appId ID of the application to monitor.
-   * @param returnOnRunning Whether to also return the application state when it is RUNNING.
+   * @param appId                ID of the application to monitor.
+   * @param returnOnRunning      Whether to also return the application state when it is RUNNING.
    * @param logApplicationReport Whether to log details of the application report every iteration.
-   * @param interval How often to poll the YARN RM for application status (in ms).
+   * @param interval             How often to poll the YARN RM for application status (in ms).
    * @return A pair of the yarn application state and the final application state.
    */
   def monitorApplication(
-      appId: ApplicationId,
-      returnOnRunning: Boolean = false,
-      logApplicationReport: Boolean = true,
-      interval: Long = sparkConf.get(REPORT_INTERVAL)): YarnAppReport = {
+                          appId: ApplicationId,
+                          returnOnRunning: Boolean = false,
+                          logApplicationReport: Boolean = true,
+                          interval: Long = sparkConf.get(REPORT_INTERVAL)): YarnAppReport = {
     var lastState: YarnApplicationState = null
     while (true) {
       Thread.sleep(interval)
@@ -1112,8 +1182,8 @@ private[spark] class Client(
       }
 
       if (state == YarnApplicationState.FINISHED ||
-          state == YarnApplicationState.FAILED ||
-          state == YarnApplicationState.KILLED) {
+        state == YarnApplicationState.FAILED ||
+        state == YarnApplicationState.KILLED) {
         cleanupStagingDir()
         return createAppReport(report)
       }
@@ -1122,7 +1192,7 @@ private[spark] class Client(
         return createAppReport(report)
       }
       if (state == YarnApplicationState.ACCEPTED && isClientUnmanagedAMEnabled &&
-          appMaster == null && report.getAMRMToken != null) {
+        appMaster == null && report.getAMRMToken != null) {
         appMaster = startApplicationMasterService(report)
       }
       lastState = state
@@ -1159,14 +1229,14 @@ private[spark] class Client(
   /**
    * Format an application report and optionally, links to driver logs, in a human-friendly manner.
    *
-   * @param report The application report from YARN.
+   * @param report          The application report from YARN.
    * @param driverLogsLinks A map of driver log files and their links. Keys are the file names
    *                        (e.g. `stdout`), and values are the links. If empty, nothing will be
    *                        printed.
    * @return Human-readable version of the input data.
    */
   private def formatReportDetails(report: ApplicationReport,
-    driverLogsLinks: IMap[String, String]): String = {
+                                  driverLogsLinks: IMap[String, String]): String = {
     val details = Seq[(String, String)](
       ("client token", getClientToken(report)),
       ("diagnostics", report.getDiagnostics),
@@ -1224,7 +1294,10 @@ private[spark] class Client(
    * throw an appropriate SparkException.
    */
   def run(): Unit = {
+    // 1 提交 ApplicationMaster 到 yarn
     this.appId = submitApplication()
+
+    // 2 一般情况下执行 else 语句
     if (!launcherBackend.isConnected() && fireAndForget) {
       val report = getApplicationReport(appId)
       val state = report.getYarnApplicationState
@@ -1234,6 +1307,7 @@ private[spark] class Client(
         throw new SparkException(s"Application $appId finished with status: $state")
       }
     } else {
+      // 持续获取 Application 运行日志
       val YarnAppReport(appState, finalState, diags) = monitorApplication(appId)
       if (appState == YarnApplicationState.FAILED || finalState == FinalApplicationStatus.FAILED) {
         diags.foreach { err =>
@@ -1322,7 +1396,7 @@ private object Client extends Logging {
    * classpath specified through the Hadoop and Yarn configurations.
    */
   private[yarn] def populateHadoopClasspath(conf: Configuration, env: HashMap[String, String])
-    : Unit = {
+  : Unit = {
     val classPathElementsToAdd = getYarnAppClasspath(conf) ++ getMRAppClasspath(conf)
     classPathElementsToAdd.foreach { c =>
       YarnSparkHadoopUtil.addPathToEnvironment(env, Environment.CLASSPATH.name, c.trim)
@@ -1358,11 +1432,11 @@ private object Client extends Logging {
    * @param args Client arguments (when starting the AM) or null (when starting executors).
    */
   private[yarn] def populateClasspath(
-      args: ClientArguments,
-      conf: Configuration,
-      sparkConf: SparkConf,
-      env: HashMap[String, String],
-      extraClassPath: Option[String] = None): Unit = {
+                                       args: ClientArguments,
+                                       conf: Configuration,
+                                       sparkConf: SparkConf,
+                                       env: HashMap[String, String],
+                                       extraClassPath: Option[String] = None): Unit = {
     extraClassPath.foreach { cp =>
       addClasspathEntry(getClusterPath(sparkConf, cp), env)
     }
@@ -1376,11 +1450,11 @@ private object Client extends Logging {
       // we have to do the mainJar separate in order to send the right thing
       // into addFileToClasspath
       val mainJar =
-        if (args != null) {
-          getMainJarUri(Option(args.userJar))
-        } else {
-          getMainJarUri(sparkConf.get(APP_JAR))
-        }
+      if (args != null) {
+        getMainJarUri(Option(args.userJar))
+      } else {
+        getMainJarUri(sparkConf.get(APP_JAR))
+      }
       mainJar.foreach(addFileToClasspath(sparkConf, conf, _, APP_JAR_NAME, env))
 
       val secondaryJars =
@@ -1450,18 +1524,18 @@ private object Client extends Logging {
    *
    * If not a "local:" file and no alternate name, the linkName will be added to the classpath.
    *
-   * @param conf        Spark configuration.
-   * @param hadoopConf  Hadoop configuration.
-   * @param uri         URI to add to classpath (optional).
-   * @param fileName    Alternate name for the file (optional).
-   * @param env         Map holding the environment variables.
+   * @param conf       Spark configuration.
+   * @param hadoopConf Hadoop configuration.
+   * @param uri        URI to add to classpath (optional).
+   * @param fileName   Alternate name for the file (optional).
+   * @param env        Map holding the environment variables.
    */
   private def addFileToClasspath(
-      conf: SparkConf,
-      hadoopConf: Configuration,
-      uri: URI,
-      fileName: String,
-      env: HashMap[String, String]): Unit = {
+                                  conf: SparkConf,
+                                  hadoopConf: Configuration,
+                                  uri: URI,
+                                  fileName: String,
+                                  env: HashMap[String, String]): Unit = {
     if (uri != null && uri.getScheme == Utils.LOCAL_SCHEME) {
       addClasspathEntry(getClusterPath(conf, uri.getPath), env)
     } else if (fileName != null) {
@@ -1633,12 +1707,18 @@ private[spark] class YarnClusterApplication extends SparkApplication {
     conf.remove(FILES)
     conf.remove(ARCHIVES)
 
-    new Client(new ClientArguments(args), conf, null).run()
+    // 2 创建 Client
+    // 解析 hadoop 配置依赖、创建 YarnClientImpl、解析部署模式 (cluster/client)、任务运行内存等
+    new Client(
+      // 1 创建 ClientArguments 解析用户程序 Jar、运行主类名称以及其对应的 main() 入口 参数
+      new ClientArguments(args), conf, null)
+      // 3 提交任务到 yarn
+      .run()
   }
 
 }
 
 private[spark] case class YarnAppReport(
-    appState: YarnApplicationState,
-    finalState: FinalApplicationStatus,
-    diagnostics: Option[String])
+                                         appState: YarnApplicationState,
+                                         finalState: FinalApplicationStatus,
+                                         diagnostics: Option[String])

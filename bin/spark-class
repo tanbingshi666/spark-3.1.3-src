@@ -24,6 +24,7 @@ fi
 . "${SPARK_HOME}"/bin/load-spark-env.sh
 
 # Find the java binary
+# 找到 java 命令
 if [ -n "${JAVA_HOME}" ]; then
   RUNNER="${JAVA_HOME}/bin/java"
 else
@@ -36,6 +37,7 @@ else
 fi
 
 # Find Spark jars.
+# 找到 jars 目录
 if [ -d "${SPARK_HOME}/jars" ]; then
   SPARK_JARS_DIR="${SPARK_HOME}/jars"
 else
@@ -47,6 +49,7 @@ if [ ! -d "$SPARK_JARS_DIR" ] && [ -z "$SPARK_TESTING$SPARK_SQL_TESTING" ]; then
   echo "You need to build Spark with the target \"package\" before running this program." 1>&2
   exit 1
 else
+  # 获取 jars 目录下的所有 jar
   LAUNCH_CLASSPATH="$SPARK_JARS_DIR/*"
 fi
 
@@ -67,6 +70,7 @@ fi
 #
 # The exit code of the launcher is appended to the output, so the parent shell removes it from the
 # command array and checks the value to see if the launcher succeeded.
+# 通过 Main 程序 (通过打印) 拼接运行 SparkSubmit 程序
 build_command() {
   "$RUNNER" -Xmx128m $SPARK_LAUNCHER_OPTS -cp "$LAUNCH_CLASSPATH" org.apache.spark.launcher.Main "$@"
   printf "%d\0" $?
@@ -107,5 +111,6 @@ if [ $LAUNCHER_EXIT_CODE != 0 ]; then
   exit $LAUNCHER_EXIT_CODE
 fi
 
+# 真正运行 SparkSubmit 程序
 CMD=("${CMD[@]:0:$LAST}")
 exec "${CMD[@]}"

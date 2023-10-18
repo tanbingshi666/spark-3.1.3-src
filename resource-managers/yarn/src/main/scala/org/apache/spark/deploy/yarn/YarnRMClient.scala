@@ -83,6 +83,7 @@ private[spark] class YarnRMClient extends Logging {
       securityMgr: SecurityManager,
       localResources: Map[String, LocalResource]): YarnAllocator = {
     require(registered, "Must register AM before creating allocator.")
+    // 创建 YarnAllocator
     new YarnAllocator(driverUrl, driverRef, conf, sparkConf, amClient, appAttemptId, securityMgr,
       localResources, SparkRackResolver.get(conf))
   }

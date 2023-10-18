@@ -51,6 +51,7 @@ private[spark] class YarnClusterManager extends ExternalClusterManager {
   }
 
   override def initialize(scheduler: TaskScheduler, backend: SchedulerBackend): Unit = {
+    // 初始化 TaskScheduler
     scheduler.asInstanceOf[TaskSchedulerImpl].initialize(backend)
   }
 }
