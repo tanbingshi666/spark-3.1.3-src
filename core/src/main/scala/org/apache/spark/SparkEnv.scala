@@ -267,6 +267,7 @@ object SparkEnv extends Logging {
       }
     }
 
+    // sparkDriver
     val systemName = if (isDriver) driverSystemName else executorSystemName
     // 1 创建 NettyRpcEnv 也即启动一个 Netty Tcp Rpc Server
     val rpcEnv = RpcEnv.create(systemName, bindAddress, advertiseAddress, port.getOrElse(-1), conf,
@@ -335,11 +336,12 @@ object SparkEnv extends Logging {
     // Have to assign trackerEndpoint after initialization as MapOutputTrackerEndpoint
     // requires the MapOutputTracker itself
     // 5 往 NettyRpcEnv 注册 MapOutputTracker 对应的 RpcEndpoint
+    // 调用 MapOutputTrackerMasterEndpoint.onStart() 也即调用其父类 RpcEndpoint.onStart()
     mapOutputTracker.trackerEndpoint = registerOrLookupEndpoint(MapOutputTracker.ENDPOINT_NAME,
       new MapOutputTrackerMasterEndpoint(rpcEnv, mapOutputTracker.asInstanceOf[MapOutputTrackerMaster], conf))
 
     // Let the user specify short names for shuffle managers
-    // 5 shuffle 管理类型
+    // 6 shuffle 管理类型
     val shortShuffleMgrNames = Map(
       "sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName,
       "tungsten-sort" -> classOf[org.apache.spark.shuffle.sort.SortShuffleManager].getName)
@@ -351,7 +353,7 @@ object SparkEnv extends Logging {
     // 创建 SortShuffleManager
     val shuffleManager = instantiateClass[ShuffleManager](shuffleMgrClass)
 
-    // 6 创建统一内存管理 UnifiedMemoryManager
+    // 7 创建统一内存管理 UnifiedMemoryManager
     val memoryManager: MemoryManager = UnifiedMemoryManager(conf, numUsableCores)
 
     val blockManagerPort = if (isDriver) {
@@ -370,9 +372,10 @@ object SparkEnv extends Logging {
 
     // Mapping from block manager id to the block manager's information.
     val blockManagerInfo = new concurrent.TrieMap[BlockManagerId, BlockManagerInfo]()
-    // 7 创建 BlockManagerMaster
+    // 8 创建 BlockManagerMaster
     val blockManagerMaster = new BlockManagerMaster(
       // 往 NettyRpcEnv 注册 BlockManagerMaster 对应的 BlockManagerMasterEndpoint
+      // 调用 BlockManagerMasterEndpoint.onStart() 也即调用其父类 RpcEndpoint.onStart()
       registerOrLookupEndpoint(
         BlockManagerMaster.DRIVER_ENDPOINT_NAME,
         new BlockManagerMasterEndpoint(
@@ -387,19 +390,20 @@ object SparkEnv extends Logging {
           }, blockManagerInfo,
           mapOutputTracker.asInstanceOf[MapOutputTrackerMaster])),
       // 往 NettyRpcEnv 注册 BlockManagerMasterHeartbeat 对应的 BlockManagerMasterHeartbeatEndpoint
+      // 调用 BlockManagerMasterHeartbeatEndpoint.onStart() 也即调用其父类 RpcEndpoint.onStart()
       registerOrLookupEndpoint(
         BlockManagerMaster.DRIVER_HEARTBEAT_ENDPOINT_NAME,
         new BlockManagerMasterHeartbeatEndpoint(rpcEnv, isLocal, blockManagerInfo)),
       conf,
       isDriver)
 
-    // 8 创建 NettyBlockTransferService
+    // 9 创建 NettyBlockTransferService
     val blockTransferService =
       new NettyBlockTransferService(conf, securityManager, bindAddress, advertiseAddress,
         blockManagerPort, numUsableCores, blockManagerMaster.driverEndpoint)
 
     // NB: blockManager is not valid until initialize() is called later.
-    // 9 创建 BlockManager
+    // 10 创建 BlockManager
     val blockManager = new BlockManager(
       executorId,
       rpcEnv,
@@ -429,17 +433,18 @@ object SparkEnv extends Logging {
       ms
     }
 
-    // 10 创建 OutputCommitCoordinator
+    // 11 创建 OutputCommitCoordinator
     val outputCommitCoordinator = mockOutputCommitCoordinator.getOrElse {
       new OutputCommitCoordinator(conf, isDriver)
     }
 
-    // 11 往 NettyRpcEnv 注册 OutputCommitCoordinator 对应的 OutputCommitCoordinatorEndpoint
+    // 12 往 NettyRpcEnv 注册 OutputCommitCoordinator 对应的 OutputCommitCoordinatorEndpoint
+    // 调用 OutputCommitCoordinatorEndpoint.onStart() 也即调用其父类 RpcEndpoint.onStart()
     val outputCommitCoordinatorRef = registerOrLookupEndpoint("OutputCommitCoordinator",
       new OutputCommitCoordinatorEndpoint(rpcEnv, outputCommitCoordinator))
     outputCommitCoordinator.coordinatorRef = Some(outputCommitCoordinatorRef)
 
-    // 12 创建 SparkEnv
+    // 13 创建 SparkEnv
     val envInstance = new SparkEnv(
       executorId,
       rpcEnv,
@@ -464,6 +469,7 @@ object SparkEnv extends Logging {
       envInstance.driverTmpDir = Some(sparkFilesDir)
     }
 
+    // 14 返回 SparkEnv
     envInstance
   }
 

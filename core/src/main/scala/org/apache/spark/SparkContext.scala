@@ -571,6 +571,7 @@ class SparkContext(config: SparkConf) extends Logging {
     // We need to register "HeartbeatReceiver" before "createTaskScheduler" because Executor will
     // retrieve "HeartbeatReceiver" in the constructor. (SPARK-6640)
     // 8 往 NettyRpcEnv 注册 HeartbeatReceiver 对应的 HeartbeatReceiver
+    // 调用 HeartbeatReceiver.onStart()
     _heartbeatReceiver = env.rpcEnv.setupEndpoint(
       HeartbeatReceiver.ENDPOINT_NAME, new HeartbeatReceiver(this))
 
@@ -3001,7 +3002,7 @@ object SparkContext extends Logging {
           // cluster => YarnClusterSchedulerBackend
           // client  => YarnClientSchedulerBackend
           val backend = cm.createSchedulerBackend(sc, masterUrl, scheduler)
-          // 初始化 YarnClusterManager 也即初始化 Scheduler
+          // 初始化 YarnClusterManager 也即初始化 YarnClusterScheduler
           cm.initialize(scheduler, backend)
           (backend, scheduler)
         } catch {
