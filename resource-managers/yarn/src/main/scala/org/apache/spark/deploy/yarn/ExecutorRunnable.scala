@@ -60,9 +60,12 @@ private[yarn] class ExecutorRunnable(
 
   def run(): Unit = {
     logDebug("Starting Executor Container")
+    // 1 初始化 Yarn NodeManager 连接
     nmClient = NMClient.createNMClient()
     nmClient.init(conf)
     nmClient.start()
+
+    // 2 启动容器 本质向 Yarn NodeManager 发送 RPC 请求
     startContainer()
   }
 
@@ -84,6 +87,8 @@ private[yarn] class ExecutorRunnable(
   }
 
   def startContainer(): java.util.Map[String, ByteBuffer] = {
+
+    // 1 创建 ContainerLaunchContext 容器上下文
     val ctx = Records.newRecord(classOf[ContainerLaunchContext])
       .asInstanceOf[ContainerLaunchContext]
     val env = prepareEnvironment().asJava
@@ -96,9 +101,10 @@ private[yarn] class ExecutorRunnable(
     credentials.writeTokenStorageToStream(dob)
     ctx.setTokens(ByteBuffer.wrap(dob.getData()))
 
+    // 2 构建启动 org.apache.spark.executor.YarnCoarseGrainedExecutorBackend
     val commands = prepareCommand()
-
     ctx.setCommands(commands.asJava)
+
     ctx.setApplicationACLs(
       YarnSparkHadoopUtil.getApplicationAclsForYarn(securityMgr).asJava)
 
@@ -120,6 +126,7 @@ private[yarn] class ExecutorRunnable(
 
     // Send the start request to the ContainerManager
     try {
+      // 3 向 NodeManager 发送 RPC 请求启动 YarnCoarseGrainedExecutorBackend
       nmClient.startContainer(container.get, ctx)
     } catch {
       case ex: Exception =>

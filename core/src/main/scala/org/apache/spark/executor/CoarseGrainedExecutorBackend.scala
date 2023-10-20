@@ -45,16 +45,16 @@ import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.util.{ChildFirstURLClassLoader, MutableURLClassLoader, SignalUtils, ThreadUtils, Utils}
 
 private[spark] class CoarseGrainedExecutorBackend(
-    override val rpcEnv: RpcEnv,
-    driverUrl: String,
-    executorId: String,
-    bindAddress: String,
-    hostname: String,
-    cores: Int,
-    userClassPath: Seq[URL],
-    env: SparkEnv,
-    resourcesFileOpt: Option[String],
-    resourceProfile: ResourceProfile)
+                                                   override val rpcEnv: RpcEnv,
+                                                   driverUrl: String,
+                                                   executorId: String,
+                                                   bindAddress: String,
+                                                   hostname: String,
+                                                   cores: Int,
+                                                   userClassPath: Seq[URL],
+                                                   env: SparkEnv,
+                                                   resourcesFileOpt: Option[String],
+                                                   resourceProfile: ResourceProfile)
   extends IsolatedRpcEndpoint with ExecutorBackend with Logging {
 
   import CoarseGrainedExecutorBackend._
@@ -84,7 +84,7 @@ private[spark] class CoarseGrainedExecutorBackend(
     if (env.conf.get(DECOMMISSION_ENABLED)) {
       logInfo("Registering PWR handler to trigger decommissioning.")
       SignalUtils.register("PWR", "Failed to register SIGPWR handler - " +
-        "disabling executor decommission feature.") (self.askSync[Boolean](ExecutorSigPWRReceived))
+        "disabling executor decommission feature.")(self.askSync[Boolean](ExecutorSigPWRReceived))
     }
 
     logInfo("Connecting to driver: " + driverUrl)
@@ -94,13 +94,17 @@ private[spark] class CoarseGrainedExecutorBackend(
       case NonFatal(e) =>
         exitExecutor(1, "Unable to create executor due to " + e.getMessage, e)
     }
+    // 1 找到 Driver RpcEndpointRef
     rpcEnv.asyncSetupEndpointRefByURI(driverUrl).flatMap { ref =>
       // This is a very fast action so we can use "ThreadUtils.sameThread"
       driver = Some(ref)
+      // 2 向 Driver 发送 RegisterExecutor RPC 请求
+      // 调用 CoarseGrainedSchedulerBackend.receiveAndReply()
       ref.ask[Boolean](RegisterExecutor(executorId, self, hostname, cores, extractLogUrls,
         extractAttributes, _resources, resourceProfile.id))
     }(ThreadUtils.sameThread).onComplete {
       case Success(_) =>
+        // 3 注册成功之后向本身发送 RegisteredExecutor
         self.send(RegisteredExecutor)
       case Failure(e) =>
         exitExecutor(1, s"Cannot register with driver: $driverUrl", e, notifyDriver = false)
@@ -152,11 +156,17 @@ private[spark] class CoarseGrainedExecutorBackend(
   }
 
   override def receive: PartialFunction[Any, Unit] = {
+    // executor 向 driver 注册成功后的回调
     case RegisteredExecutor =>
       logInfo("Successfully registered with driver")
       try {
+        // 1 创建 Executor
+        // 核心初始化线程池
         executor = new Executor(executorId, hostname, env, userClassPath, isLocal = false,
           resources = _resources)
+
+        // 2 向 driver 发送 LaunchedExecutor 请求
+        // 调用 CoarseGrainedSchedulerBackend.receiveAndReply()
         driver.get.send(LaunchedExecutor(executorId))
       } catch {
         case NonFatal(e) =>
@@ -167,9 +177,11 @@ private[spark] class CoarseGrainedExecutorBackend(
       if (executor == null) {
         exitExecutor(1, "Received LaunchTask command but executor was null")
       } else {
+        // 反序列
         val taskDesc = TaskDescription.decode(data.value)
         logInfo("Got assigned task " + taskDesc.taskId)
         taskResources(taskDesc.taskId) = taskDesc.resources
+        // 执行 TaskDescription
         executor.launchTask(this, taskDesc)
       }
 
@@ -370,32 +382,33 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
   case object RegisteredExecutor
 
   case class Arguments(
-      driverUrl: String,
-      executorId: String,
-      bindAddress: String,
-      hostname: String,
-      cores: Int,
-      appId: String,
-      workerUrl: Option[String],
-      userClassPath: mutable.ListBuffer[URL],
-      resourcesFileOpt: Option[String],
-      resourceProfileId: Int)
+                        driverUrl: String,
+                        executorId: String,
+                        bindAddress: String,
+                        hostname: String,
+                        cores: Int,
+                        appId: String,
+                        workerUrl: Option[String],
+                        userClassPath: mutable.ListBuffer[URL],
+                        resourcesFileOpt: Option[String],
+                        resourceProfileId: Int)
 
   def main(args: Array[String]): Unit = {
     val createFn: (RpcEnv, Arguments, SparkEnv, ResourceProfile) =>
-      CoarseGrainedExecutorBackend = { case (rpcEnv, arguments, env, resourceProfile) =>
-      new CoarseGrainedExecutorBackend(rpcEnv, arguments.driverUrl, arguments.executorId,
-        arguments.bindAddress, arguments.hostname, arguments.cores, arguments.userClassPath.toSeq,
-        env, arguments.resourcesFileOpt, resourceProfile)
+      CoarseGrainedExecutorBackend = {
+      case (rpcEnv, arguments, env, resourceProfile) =>
+        new CoarseGrainedExecutorBackend(rpcEnv, arguments.driverUrl, arguments.executorId,
+          arguments.bindAddress, arguments.hostname, arguments.cores, arguments.userClassPath.toSeq,
+          env, arguments.resourcesFileOpt, resourceProfile)
     }
     run(parseArguments(args, this.getClass.getCanonicalName.stripSuffix("$")), createFn)
     System.exit(0)
   }
 
   def run(
-      arguments: Arguments,
-      backendCreateFn: (RpcEnv, Arguments, SparkEnv, ResourceProfile) =>
-        CoarseGrainedExecutorBackend): Unit = {
+           arguments: Arguments,
+           backendCreateFn: (RpcEnv, Arguments, SparkEnv, ResourceProfile) =>
+             CoarseGrainedExecutorBackend): Unit = {
 
     Utils.initDaemon(log)
 
@@ -405,6 +418,7 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
 
       // Bootstrap to fetch the driver's Spark properties.
       val executorConf = new SparkConf
+      // 1 创建 NettyRpcEnv
       val fetcher = RpcEnv.create(
         "driverPropsFetcher",
         arguments.bindAddress,
@@ -419,6 +433,7 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
       val nTries = 3
       for (i <- 0 until nTries if driver == null) {
         try {
+          // 2 获取 Driver EndpointRef
           driver = fetcher.setupEndpointRefByURI(arguments.driverUrl)
         } catch {
           case e: Throwable => if (i == nTries - 1) {
@@ -427,6 +442,8 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
         }
       }
 
+      // 2 向 Driver 发送一个 RetrieveSparkAppConfig RPC 获取相关配置信息
+      // 调用 CoarseGrainedSchedulerBackend.receiveAndReply()
       val cfg = driver.askSync[SparkAppConfig](RetrieveSparkAppConfig(arguments.resourceProfileId))
       val props = cfg.sparkProperties ++ Seq[(String, String)](("spark.app.id", arguments.appId))
       fetcher.shutdown()
@@ -447,15 +464,24 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
       }
 
       driverConf.set(EXECUTOR_ID, arguments.executorId)
+      // 3 创建 SparkEnv
       val env = SparkEnv.createExecutorEnv(driverConf, arguments.executorId, arguments.bindAddress,
         arguments.hostname, arguments.cores, cfg.ioEncryptionKey, isLocal = false)
 
+      // 4 创建 YarnCoarseGrainedExecutorBackend
       val backend = backendCreateFn(env.rpcEnv, arguments, env, cfg.resourceProfile)
+
+      // 5 往 NettyRpcEnv 注册 YarnCoarseGrainedExecutorBackend、WorkerWatcher
+      // 调用 YarnCoarseGrainedExecutorBackend.onStart()
+      // 本质调用其父类 CoarseGrainedExecutorBackend.onStart() 向 Driver 注册 Executor
       env.rpcEnv.setupEndpoint("Executor", backend)
       arguments.workerUrl.foreach { url =>
+        // 调用 WorkerWatcher.onStart()
         env.rpcEnv.setupEndpoint("WorkerWatcher",
           new WorkerWatcher(env.rpcEnv, url, isChildProcessStopping = backend.stopping))
       }
+
+      // 6 阻塞等待
       env.rpcEnv.awaitTermination()
     }
   }
@@ -536,20 +562,20 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
     // scalastyle:off println
     System.err.println(
       s"""
-      |Usage: $classNameForEntry [options]
-      |
-      | Options are:
-      |   --driver-url <driverUrl>
-      |   --executor-id <executorId>
-      |   --bind-address <bindAddress>
-      |   --hostname <hostname>
-      |   --cores <cores>
-      |   --resourcesFile <fileWithJSONResourceInformation>
-      |   --app-id <appid>
-      |   --worker-url <workerUrl>
-      |   --user-class-path <url>
-      |   --resourceProfileId <id>
-      |""".stripMargin)
+         |Usage: $classNameForEntry [options]
+         |
+         | Options are:
+         |   --driver-url <driverUrl>
+         |   --executor-id <executorId>
+         |   --bind-address <bindAddress>
+         |   --hostname <hostname>
+         |   --cores <cores>
+         |   --resourcesFile <fileWithJSONResourceInformation>
+         |   --app-id <appid>
+         |   --worker-url <workerUrl>
+         |   --user-class-path <url>
+         |   --resourceProfileId <id>
+         |""".stripMargin)
     // scalastyle:on println
     System.exit(1)
   }

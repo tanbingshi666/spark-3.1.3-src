@@ -53,23 +53,23 @@ import org.apache.spark.util.{Clock, SystemClock, ThreadUtils}
  * This class makes use of YARN's AMRMClient APIs. We interact with the AMRMClient in three ways:
  * * Making our resource needs known, which updates local bookkeeping about containers requested.
  * * Calling "allocate", which syncs our local container requests with the RM, and returns any
- *   containers that YARN has granted to us.  This also functions as a heartbeat.
+ * containers that YARN has granted to us.  This also functions as a heartbeat.
  * * Processing the containers granted to us to possibly launch executors inside of them.
  *
  * The public methods of this class are thread-safe.  All methods that mutate state are
  * synchronized.
  */
 private[yarn] class YarnAllocator(
-    driverUrl: String,
-    driverRef: RpcEndpointRef,
-    conf: YarnConfiguration,
-    sparkConf: SparkConf,
-    amClient: AMRMClient[ContainerRequest],
-    appAttemptId: ApplicationAttemptId,
-    securityMgr: SecurityManager,
-    localResources: Map[String, LocalResource],
-    resolver: SparkRackResolver,
-    clock: Clock = new SystemClock)
+                                   driverUrl: String,
+                                   driverRef: RpcEndpointRef,
+                                   conf: YarnConfiguration,
+                                   sparkConf: SparkConf,
+                                   amClient: AMRMClient[ContainerRequest],
+                                   appAttemptId: ApplicationAttemptId,
+                                   securityMgr: SecurityManager,
+                                   localResources: Map[String, LocalResource],
+                                   resolver: SparkRackResolver,
+                                   clock: Clock = new SystemClock)
   extends Logging {
 
   import YarnAllocator._
@@ -77,7 +77,7 @@ private[yarn] class YarnAllocator(
   // Visible for testing.
   @GuardedBy("this")
   val allocatedHostToContainersMapPerRPId =
-    new HashMap[Int, HashMap[String, collection.mutable.Set[ContainerId]]]
+  new HashMap[Int, HashMap[String, collection.mutable.Set[ContainerId]]]
 
   @GuardedBy("this")
   val allocatedContainerToHostMap = new HashMap[ContainerId, String]
@@ -132,12 +132,12 @@ private[yarn] class YarnAllocator(
   // task numbers running on it.
   @GuardedBy("this")
   private var hostToLocalTaskCountPerResourceProfileId: Map[Int, Map[String, Int]] =
-    Map(DEFAULT_RESOURCE_PROFILE_ID -> Map.empty)
+  Map(DEFAULT_RESOURCE_PROFILE_ID -> Map.empty)
 
   // ResourceProfile Id to number of tasks that have locality preferences in active stages
   @GuardedBy("this")
   private[yarn] var numLocalityAwareTasksPerResourceProfileId: Map[Int, Int] =
-    Map(DEFAULT_RESOURCE_PROFILE_ID -> 0)
+  Map(DEFAULT_RESOURCE_PROFILE_ID -> 0)
 
   /**
    * Used to generate a unique ID per executor
@@ -154,7 +154,7 @@ private[yarn] class YarnAllocator(
    */
   @GuardedBy("this")
   private var executorIdCounter: Int =
-    driverRef.askSync[Int](RetrieveLastAllocatedExecutorId)
+  driverRef.askSync[Int](RetrieveLastAllocatedExecutorId)
 
   private[spark] val failureTracker = new FailureTracker(sparkConf, clock)
 
@@ -181,11 +181,19 @@ private[yarn] class YarnAllocator(
   private def initDefaultProfile(): Unit = synchronized {
     allocatedHostToContainersMapPerRPId(DEFAULT_RESOURCE_PROFILE_ID) =
       new HashMap[String, mutable.Set[ContainerId]]()
+
     runningExecutorsPerResourceProfileId.put(DEFAULT_RESOURCE_PROFILE_ID, mutable.HashSet[String]())
+
     numExecutorsStartingPerResourceProfileId(DEFAULT_RESOURCE_PROFILE_ID) = new AtomicInteger(0)
+
+    // 获取 executor 个数
     val initTargetExecNum = SchedulerBackendUtils.getInitialTargetExecutorNumber(sparkConf)
     targetNumExecutorsPerResourceProfileId(DEFAULT_RESOURCE_PROFILE_ID) = initTargetExecNum
+
+    // 设置 executor 申请信息 比如内存、cpu 等
     val defaultProfile = ResourceProfile.getOrCreateDefaultProfile(sparkConf)
+
+    // 封装 executor 资源 ResourceProfile
     createYarnResourceForResourceProfile(defaultProfile)
   }
 
@@ -238,7 +246,7 @@ private[yarn] class YarnAllocator(
   }
 
   private def getOrUpdateAllocatedHostToContainersMapForRPId(
-      rpId: Int): HashMap[String, collection.mutable.Set[ContainerId]] = synchronized {
+                                                              rpId: Int): HashMap[String, collection.mutable.Set[ContainerId]] = synchronized {
     allocatedHostToContainersMapPerRPId.getOrElseUpdate(rpId,
       new HashMap[String, mutable.Set[ContainerId]]())
   }
@@ -261,7 +269,7 @@ private[yarn] class YarnAllocator(
    * that have not yet been fulfilled.
    */
   private def getPendingAtLocation(
-      location: String): Map[Int, Seq[ContainerRequest]] = synchronized {
+                                    location: String): Map[Int, Seq[ContainerRequest]] = synchronized {
     val allContainerRequests = new mutable.HashMap[Int, Seq[ContainerRequest]]
     rpIdToResourceProfile.keys.foreach { id =>
       val profResource = rpIdToYarnResource.get(id)
@@ -321,6 +329,8 @@ private[yarn] class YarnAllocator(
       ResourceRequestHelper.setResourceRequests(customResources, resource)
       logDebug(s"Created resource capability: $resource")
       rpIdToYarnResource.putIfAbsent(rp.id, resource)
+
+      // 缓存每个 executor 资源申请 ResourceProfile
       rpIdToResourceProfile(rp.id) = rp
     }
   }
@@ -329,22 +339,23 @@ private[yarn] class YarnAllocator(
    * Request as many executors from the ResourceManager as needed to reach the desired total. If
    * the requested total is smaller than the current number of running executors, no executors will
    * be killed.
-   * @param resourceProfileToTotalExecs total number of containers requested for each
-   *                                    ResourceProfile
+   *
+   * @param resourceProfileToTotalExecs               total number of containers requested for each
+   *                                                  ResourceProfile
    * @param numLocalityAwareTasksPerResourceProfileId number of locality aware tasks for each
    *                                                  ResourceProfile id to be used as container
    *                                                  placement hint.
-   * @param hostToLocalTaskCount a map of preferred hostname to possible task counts for each
-   *                             ResourceProfile id to be used as container placement hint.
-   * @param excludedNodes excluded nodes, which is passed in to avoid allocating new containers
-   *                      on them. It will be used to update the applications excluded node list.
+   * @param hostToLocalTaskCount                      a map of preferred hostname to possible task counts for each
+   *                                                  ResourceProfile id to be used as container placement hint.
+   * @param excludedNodes                             excluded nodes, which is passed in to avoid allocating new containers
+   *                                                  on them. It will be used to update the applications excluded node list.
    * @return Whether the new requested total is different than the old value.
    */
   def requestTotalExecutorsWithPreferredLocalities(
-      resourceProfileToTotalExecs: Map[ResourceProfile, Int],
-      numLocalityAwareTasksPerResourceProfileId: Map[Int, Int],
-      hostToLocalTaskCountPerResourceProfileId: Map[Int, Map[String, Int]],
-      excludedNodes: Set[String]): Boolean = synchronized {
+                                                    resourceProfileToTotalExecs: Map[ResourceProfile, Int],
+                                                    numLocalityAwareTasksPerResourceProfileId: Map[Int, Int],
+                                                    hostToLocalTaskCountPerResourceProfileId: Map[Int, Map[String, Int]],
+                                                    excludedNodes: Set[String]): Boolean = synchronized {
     this.numLocalityAwareTasksPerResourceProfileId = numLocalityAwareTasksPerResourceProfileId
     this.hostToLocalTaskCountPerResourceProfileId = hostToLocalTaskCountPerResourceProfileId
 
@@ -385,13 +396,16 @@ private[yarn] class YarnAllocator(
    * This must be synchronized because variables read in this method are mutated by other methods.
    */
   def allocateResources(): Unit = synchronized {
+    // 1 执行申请资源 也即向 Yarn ResourceManager 的 ApplicationMasterService 发送 RPC 请求
     updateResourceRequests()
 
     val progressIndicator = 0.1f
     // Poll the ResourceManager. This doubles as a heartbeat if there are no pending container
     // requests.
+    // 2 通过心跳的方式获取资源申请结果
     val allocateResponse = amClient.allocate(progressIndicator)
 
+    // 3 获取 Yarn 分配好的容器信息
     val allocatedContainers = allocateResponse.getAllocatedContainers()
     allocatorNodeHealthTracker.setNumClusterNodes(allocateResponse.getNumClusterNodes)
 
@@ -404,6 +418,7 @@ private[yarn] class YarnAllocator(
           getNumExecutorsStarting,
           allocateResponse.getAvailableResources))
 
+      // 4 处理申请到的容器
       handleAllocatedContainers(allocatedContainers.asScala.toSeq)
     }
 
@@ -424,6 +439,7 @@ private[yarn] class YarnAllocator(
    * Visible for testing.
    */
   def updateResourceRequests(): Unit = synchronized {
+    // 1 获取资源请求清单
     val pendingAllocatePerResourceProfileId = getPendingAllocate
     val missingPerProfile = targetNumExecutorsPerResourceProfileId.map { case (rpId, targetNum) =>
       val starting = getOrUpdateNumExecutorsStartingForRPId(rpId).get
@@ -483,9 +499,11 @@ private[yarn] class YarnAllocator(
           potentialContainers, numLocalityAwareTasks, hostToLocalTaskCount,
           allocatedHostToContainer, localRequests, rpIdToResourceProfile(rpId))
 
+        // 2 申请容器集合
         val newLocalityRequests = new mutable.ArrayBuffer[ContainerRequest]
         containerLocalityPreferences.foreach {
           case ContainerLocalityPreferences(nodes, racks) if nodes != null =>
+            // 添加 ContainerRequest 请求
             newLocalityRequests += createContainerRequest(resource, nodes, racks, rpId)
           case _ =>
         }
@@ -507,6 +525,7 @@ private[yarn] class YarnAllocator(
           }
         }
 
+        // 3 发送 RPC 请求
         newLocalityRequests.foreach { request =>
           amClient.addContainerRequest(request)
         }
@@ -550,10 +569,10 @@ private[yarn] class YarnAllocator(
    * added in recent versions.
    */
   private def createContainerRequest(
-      resource: Resource,
-      nodes: Array[String],
-      racks: Array[String],
-      rpId: Int): ContainerRequest = {
+                                      resource: Resource,
+                                      nodes: Array[String],
+                                      racks: Array[String],
+                                      rpId: Int): ContainerRequest = {
     new ContainerRequest(resource, nodes, racks, getContainerPriority(rpId),
       true, labelExpression.orNull)
   }
@@ -570,6 +589,7 @@ private[yarn] class YarnAllocator(
     val containersToUse = new ArrayBuffer[Container](allocatedContainers.size)
 
     // Match incoming requests by host
+    // 1 获取匹配容器请求的容器信息并添加到 containersToUse 集合中
     val remainingAfterHostMatches = new ArrayBuffer[Container]
     for (allocatedContainer <- allocatedContainers) {
       matchContainerToRequest(allocatedContainer, allocatedContainer.getNodeId.getHost,
@@ -627,6 +647,7 @@ private[yarn] class YarnAllocator(
       }
     }
 
+    // 2 根据申请好的容器执行 executor
     runAllocatedContainers(containersToUse)
 
     logInfo("Received %d containers from YARN, launching executors on %d of them."
@@ -639,15 +660,15 @@ private[yarn] class YarnAllocator(
    * containersToUse or remaining.
    *
    * @param allocatedContainer container that was given to us by YARN
-   * @param location resource name, either a node, rack, or *
-   * @param containersToUse list of containers that will be used
-   * @param remaining list of containers that will not be used
+   * @param location           resource name, either a node, rack, or *
+   * @param containersToUse    list of containers that will be used
+   * @param remaining          list of containers that will not be used
    */
   private def matchContainerToRequest(
-      allocatedContainer: Container,
-      location: String,
-      containersToUse: ArrayBuffer[Container],
-      remaining: ArrayBuffer[Container]): Unit = {
+                                       allocatedContainer: Container,
+                                       location: String,
+                                       containersToUse: ArrayBuffer[Container],
+                                       remaining: ArrayBuffer[Container]): Unit = {
     // Match on the exact resource we requested so there shouldn't be a mismatch,
     // we are relying on YARN to return a container with resources no less then we requested.
     // If we change this, or starting validating the container, be sure the logic covers SPARK-6050.
@@ -655,8 +676,8 @@ private[yarn] class YarnAllocator(
     val resourceForRP = rpIdToYarnResource.get(rpId)
 
     logDebug(s"Calling amClient.getMatchingRequests with parameters: " +
-        s"priority: ${allocatedContainer.getPriority}, " +
-        s"location: $location, resource: $resourceForRP")
+      s"priority: ${allocatedContainer.getPriority}, " +
+      s"location: $location, resource: $resourceForRP")
     val matchingRequests = amClient.getMatchingRequests(allocatedContainer.getPriority, location,
       resourceForRP)
 
@@ -708,6 +729,7 @@ private[yarn] class YarnAllocator(
       if (rpRunningExecs < getOrUpdateTargetNumExecutorsForRPId(rpId)) {
         getOrUpdateNumExecutorsStartingForRPId(rpId).incrementAndGet()
         if (launchContainers) {
+          // 创建 ExecutorRunnable 并运行
           launcherPool.execute(() => {
             try {
               new ExecutorRunnable(
@@ -752,7 +774,7 @@ private[yarn] class YarnAllocator(
 
   // Visible for testing.
   private[yarn] def processCompletedContainers(
-      completedContainers: Seq[ContainerStatus]): Unit = synchronized {
+                                                completedContainers: Seq[ContainerStatus]): Unit = synchronized {
     for (completedContainer <- completedContainers) {
       val containerId = completedContainer.getContainerId
       val (_, rpId) = containerIdToExecutorIdAndResourceProfileId.getOrElse(containerId,
@@ -880,8 +902,8 @@ private[yarn] class YarnAllocator(
    * we can only find the loss reason to send back in the next call to allocateResources().
    */
   private[yarn] def enqueueGetLossReasonRequest(
-      eid: String,
-      context: RpcCallContext): Unit = synchronized {
+                                                 eid: String,
+                                                 context: RpcCallContext): Unit = synchronized {
     if (executorIdToContainer.contains(eid)) {
       pendingLossReasonRequests
         .getOrElseUpdate(eid, new ArrayBuffer[RpcCallContext]) += context
@@ -912,17 +934,18 @@ private[yarn] class YarnAllocator(
   /**
    * Split the pending container requests into 3 groups based on current localities of pending
    * tasks.
+   *
    * @param hostToLocalTaskCount a map of preferred hostname to possible task counts to be used as
    *                             container placement hint.
-   * @param pendingAllocations A sequence of pending allocation container request.
+   * @param pendingAllocations   A sequence of pending allocation container request.
    * @return A tuple of 3 sequences, first is a sequence of locality matched container
    *         requests, second is a sequence of locality unmatched container requests, and third is a
    *         sequence of locality free container requests.
    */
   private def splitPendingAllocationsByLocality(
-      hostToLocalTaskCount: Map[String, Int],
-      pendingAllocations: Seq[ContainerRequest]
-    ): (Seq[ContainerRequest], Seq[ContainerRequest], Seq[ContainerRequest]) = {
+                                                 hostToLocalTaskCount: Map[String, Int],
+                                                 pendingAllocations: Seq[ContainerRequest]
+                                               ): (Seq[ContainerRequest], Seq[ContainerRequest], Seq[ContainerRequest]) = {
     val localityMatched = ArrayBuffer[ContainerRequest]()
     val localityUnMatched = ArrayBuffer[ContainerRequest]()
     val localityFree = ArrayBuffer[ContainerRequest]()

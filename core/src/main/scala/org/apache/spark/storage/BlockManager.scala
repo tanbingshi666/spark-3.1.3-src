@@ -480,6 +480,8 @@ private[spark] class BlockManager(
 
     val id = BlockManagerId(executorId, blockTransferService.hostName, blockTransferService.port, None)
 
+    // 向 BlockManagerMaster 注册 BlockManager
+    // 也即向 BlockManagerMasterEndpoint 注册 BlockManager
     val idFromMaster = master.registerBlockManager(
       id,
       diskBlockManager.localDirsString,

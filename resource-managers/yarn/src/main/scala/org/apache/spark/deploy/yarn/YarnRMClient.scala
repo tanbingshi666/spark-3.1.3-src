@@ -44,20 +44,22 @@ private[spark] class YarnRMClient extends Logging {
   /**
    * Registers the application master with the RM.
    *
-   * @param driverHost Host name where driver is running.
-   * @param driverPort Port where driver is listening.
-   * @param conf The Yarn configuration.
-   * @param sparkConf The Spark configuration.
-   * @param uiAddress Address of the SparkUI.
+   * @param driverHost       Host name where driver is running.
+   * @param driverPort       Port where driver is listening.
+   * @param conf             The Yarn configuration.
+   * @param sparkConf        The Spark configuration.
+   * @param uiAddress        Address of the SparkUI.
    * @param uiHistoryAddress Address of the application on the History Server.
    */
   def register(
-      driverHost: String,
-      driverPort: Int,
-      conf: YarnConfiguration,
-      sparkConf: SparkConf,
-      uiAddress: Option[String],
-      uiHistoryAddress: String): Unit = {
+                driverHost: String,
+                driverPort: Int,
+                conf: YarnConfiguration,
+                sparkConf: SparkConf,
+                uiAddress: Option[String],
+                uiHistoryAddress: String): Unit = {
+
+    // 初始化并启动 yarn ApplicationMasterService 的客户端代理
     amClient = AMRMClient.createAMRMClient()
     amClient.init(conf)
     amClient.start()
@@ -69,19 +71,20 @@ private[spark] class YarnRMClient extends Logging {
 
     logInfo("Registering the ApplicationMaster")
     synchronized {
+      // 向 ApplicationMasterService 发送 ApplicationMaster 注册请求
       amClient.registerApplicationMaster(driverHost, driverPort, trackingUrl)
       registered = true
     }
   }
 
   def createAllocator(
-      conf: YarnConfiguration,
-      sparkConf: SparkConf,
-      appAttemptId: ApplicationAttemptId,
-      driverUrl: String,
-      driverRef: RpcEndpointRef,
-      securityMgr: SecurityManager,
-      localResources: Map[String, LocalResource]): YarnAllocator = {
+                       conf: YarnConfiguration,
+                       sparkConf: SparkConf,
+                       appAttemptId: ApplicationAttemptId,
+                       driverUrl: String,
+                       driverRef: RpcEndpointRef,
+                       securityMgr: SecurityManager,
+                       localResources: Map[String, LocalResource]): YarnAllocator = {
     require(registered, "Must register AM before creating allocator.")
     // 创建 YarnAllocator
     new YarnAllocator(driverUrl, driverRef, conf, sparkConf, amClient, appAttemptId, securityMgr,
@@ -91,7 +94,7 @@ private[spark] class YarnRMClient extends Logging {
   /**
    * Unregister the AM. Guaranteed to only be called once.
    *
-   * @param status The final status of the AM.
+   * @param status      The final status of the AM.
    * @param diagnostics Diagnostics message to include in the final status.
    */
   def unregister(status: FinalApplicationStatus, diagnostics: String = ""): Unit = synchronized {

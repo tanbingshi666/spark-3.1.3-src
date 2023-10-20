@@ -76,8 +76,10 @@ private[spark] object YarnCoarseGrainedExecutorBackend extends Logging {
         arguments.bindAddress, arguments.hostname, arguments.cores, arguments.userClassPath.toSeq,
         env, arguments.resourcesFileOpt, resourceProfile)
     }
+    // 1 解析参数
     val backendArgs = CoarseGrainedExecutorBackend.parseArguments(args,
       this.getClass.getCanonicalName.stripSuffix("$"))
+    // 2 运行 CoarseGrainedExecutorBackend
     CoarseGrainedExecutorBackend.run(backendArgs, createFn)
     System.exit(0)
   }

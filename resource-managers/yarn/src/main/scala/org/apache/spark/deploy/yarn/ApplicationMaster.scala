@@ -435,6 +435,8 @@ private[spark] class ApplicationMaster(
     val historyAddress = ApplicationMaster
       .getHistoryServerAddress(_sparkConf, yarnConf, appId, attemptId)
 
+    // client 也即 Yarn ResourceManager 中 ApplicationMasterService RPC 客户端代理
+    // 网络通讯协议为 ApplicationMasterProtocol
     client.register(host, port, yarnConf, _sparkConf, uiAddress, historyAddress)
     registered = true
   }
@@ -459,6 +461,8 @@ private[spark] class ApplicationMaster(
     val appId = appAttemptId.getApplicationId().toString()
     val driverUrl = RpcEndpointAddress(driverRef.address.host, driverRef.address.port,
       CoarseGrainedSchedulerBackend.ENDPOINT_NAME).toString
+
+    // 2 准备 executor 环境信息 比如 jar
     val localResources = prepareLocalResources(distCacheConf)
 
     // Before we initialize the allocator, let's log the information about how executors will
@@ -473,7 +477,7 @@ private[spark] class ApplicationMaster(
       dummyRunner.launchContextDebugInfo()
     }
 
-    // 2 创建 YarnAllocator
+    // 3 创建 YarnAllocator
     allocator = client.createAllocator(
       yarnConf,
       _sparkConf,
@@ -486,10 +490,10 @@ private[spark] class ApplicationMaster(
     // Initialize the AM endpoint *after* the allocator has been initialized. This ensures
     // that when the driver sends an initial executor request (e.g. after an AM restart),
     // the allocator is ready to service requests.
-    // 3 往 NettyRpcEnv 注册 YarnAM 对应的 AMEndpoint
+    // 4 往 NettyRpcEnv 注册 YarnAM 对应的 AMEndpoint
     rpcEnv.setupEndpoint("YarnAM", new AMEndpoint(rpcEnv, driverRef))
 
-    // 4 申请资源 一般情况下由用户线程代码执行申请资源
+    // 5 申请资源
     allocator.allocateResources()
 
     val ms = MetricsSystem.createMetricsSystem(MetricsSystemInstances.APPLICATION_MASTER,
@@ -528,8 +532,7 @@ private[spark] class ApplicationMaster(
         // 向 Yarn ResourceManager 的 ApplicationMasterService RPC 服务注册 ApplicationMaster
         registerAM(host, port, userConf, sc.ui.map(_.webUrl), appAttemptId)
 
-        // 获取 YarnSchedulerEndpoint EndpointRef
-        // 并往 NettyRpc 注册 YarnScheduler 对应的 YarnSchedulerEndpoint
+        // 获取 YarnSchedulerBackend EndpointRef
         val driverRef = rpcEnv.setupEndpointRef(
           RpcAddress(host, port), YarnSchedulerBackend.ENDPOINT_NAME)
 

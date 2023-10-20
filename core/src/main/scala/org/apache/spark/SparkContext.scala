@@ -2224,6 +2224,8 @@ class SparkContext(config: SparkConf) extends Logging {
     if (conf.getBoolean("spark.logLineage", false)) {
       logInfo("RDD's recursive dependencies:\n" + rdd.toDebugString)
     }
+
+    // 由 DAGScheduler 处理
     dagScheduler.runJob(rdd, cleanedFunc, partitions, callSite, resultHandler, localProperties.get)
     progressBar.foreach(_.finishAll())
     rdd.doCheckpoint()
@@ -2244,8 +2246,11 @@ class SparkContext(config: SparkConf) extends Logging {
                               rdd: RDD[T],
                               func: (TaskContext, Iterator[T]) => U,
                               partitions: Seq[Int]): Array[U] = {
+    // rdd 分区数组
     val results = new Array[U](partitions.size)
+    // 运行 Job
     runJob[T, U](rdd, func, partitions, (index, res) => results(index) = res)
+    // 返回结果
     results
   }
 
@@ -2264,6 +2269,7 @@ class SparkContext(config: SparkConf) extends Logging {
                               func: Iterator[T] => U,
                               partitions: Seq[Int]): Array[U] = {
     val cleanedFunc = clean(func)
+    // 运行 Job
     runJob(rdd, (ctx: TaskContext, it: Iterator[T]) => cleanedFunc(it), partitions)
   }
 
@@ -2289,6 +2295,7 @@ class SparkContext(config: SparkConf) extends Logging {
    *         a result from one partition)
    */
   def runJob[T, U: ClassTag](rdd: RDD[T], func: Iterator[T] => U): Array[U] = {
+    // 运行 Job
     runJob(rdd, func, 0 until rdd.partitions.length)
   }
 
