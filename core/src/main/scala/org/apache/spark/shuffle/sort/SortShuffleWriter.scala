@@ -25,11 +25,11 @@ import org.apache.spark.shuffle.api.ShuffleExecutorComponents
 import org.apache.spark.util.collection.ExternalSorter
 
 private[spark] class SortShuffleWriter[K, V, C](
-    shuffleBlockResolver: IndexShuffleBlockResolver,
-    handle: BaseShuffleHandle[K, V, C],
-    mapId: Long,
-    context: TaskContext,
-    shuffleExecutorComponents: ShuffleExecutorComponents)
+                                                 shuffleBlockResolver: IndexShuffleBlockResolver,
+                                                 handle: BaseShuffleHandle[K, V, C],
+                                                 mapId: Long,
+                                                 context: TaskContext,
+                                                 shuffleExecutorComponents: ShuffleExecutorComponents)
   extends ShuffleWriter[K, V] with Logging {
 
   private val dep = handle.dependency
@@ -49,6 +49,7 @@ private[spark] class SortShuffleWriter[K, V, C](
 
   /** Write a bunch of records to this task's output */
   override def write(records: Iterator[Product2[K, V]]): Unit = {
+    // 1 判断是否需要 Map 聚合 创建对应的排序器 ExternalSorter
     sorter = if (dep.mapSideCombine) {
       new ExternalSorter[K, V, C](
         context, dep.aggregator, Some(dep.partitioner), dep.keyOrdering, dep.serializer)
@@ -59,15 +60,24 @@ private[spark] class SortShuffleWriter[K, V, C](
       new ExternalSorter[K, V, V](
         context, aggregator = None, Some(dep.partitioner), ordering = None, dep.serializer)
     }
+
+    // 2 将 RDD Task 执行的结果封装为逻辑迭代器写入排序器
     sorter.insertAll(records)
 
     // Don't bother including the time to open the merged output file in the shuffle write time,
     // because it just opens a single file, so is typically too fast to measure accurately
     // (see SPARK-3570).
+    // 3 创建 LocalDiskShuffleMapOutputWriter 也即创建临时文件
     val mapOutputWriter = shuffleExecutorComponents.createMapOutputWriter(
       dep.shuffleId, mapId, dep.partitioner.numPartitions)
+
+    // 4 将 shuffle 的结果数据写入到临时文件
     sorter.writePartitionedMapOutput(dep.shuffleId, mapId, mapOutputWriter)
+
+    // 5 将临时文件的数据按照分区生成索引文件
     val partitionLengths = mapOutputWriter.commitAllPartitions().getPartitionLengths
+
+    // 6 封装返回结果 MapStatus
     mapStatus = MapStatus(blockManager.shuffleServerId, partitionLengths, mapId)
   }
 

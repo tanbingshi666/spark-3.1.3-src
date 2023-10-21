@@ -259,11 +259,13 @@ private[spark] class CoarseGrainedExecutorBackend(
 
   override def statusUpdate(taskId: Long, state: TaskState, data: ByteBuffer): Unit = {
     val resources = taskResources.getOrElse(taskId, Map.empty[String, ResourceInformation])
+    // 将 Task 执行结果返回给 Driver
     val msg = StatusUpdate(executorId, taskId, state, data, resources)
     if (TaskState.isFinished(state)) {
       taskResources.remove(taskId)
     }
     driver match {
+      // 向 Driver 发送 StatusUpdate
       case Some(driverRef) => driverRef.send(msg)
       case None => logWarning(s"Drop $msg because has not yet connected to driver")
     }

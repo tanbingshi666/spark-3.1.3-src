@@ -60,13 +60,13 @@ import org.apache.spark.util.io.ChunkedByteBuffer
  * except in the case of Mesos fine-grained mode.
  */
 private[spark] class Executor(
-    executorId: String,
-    executorHostname: String,
-    env: SparkEnv,
-    userClassPath: Seq[URL] = Nil,
-    isLocal: Boolean = false,
-    uncaughtExceptionHandler: UncaughtExceptionHandler = new SparkUncaughtExceptionHandler,
-    resources: immutable.Map[String, ResourceInformation])
+                               executorId: String,
+                               executorHostname: String,
+                               env: SparkEnv,
+                               userClassPath: Seq[URL] = Nil,
+                               isLocal: Boolean = false,
+                               uncaughtExceptionHandler: UncaughtExceptionHandler = new SparkUncaughtExceptionHandler,
+                               resources: immutable.Map[String, ResourceInformation])
   extends Logging {
 
   logInfo(s"Starting executor ID $executorId on host $executorHostname")
@@ -88,7 +88,7 @@ private[spark] class Executor(
   // No ip or host:port - just hostname
   Utils.checkHost(executorHostname)
   // must not have port specified.
-  assert (0 == Utils.parseHostPort(executorHostname)._2)
+  assert(0 == Utils.parseHostPort(executorHostname)._2)
 
   // Make sure the local hostname we report matches the cluster scheduler's name for this host
   Utils.setCustomHostname(executorHostname)
@@ -239,11 +239,11 @@ private[spark] class Executor(
   // updateDependencies. This should be done before plugin initialization below
   // because executors search plugins from the class loader and initialize them.
   private val Seq(initialUserJars, initialUserFiles, initialUserArchives) =
-    Seq("jar", "file", "archive").map { key =>
-      conf.getOption(s"spark.app.initial.$key.urls").map { urls =>
-        Map(urls.split(",").map(url => (url, appStartTime)): _*)
-      }.getOrElse(Map.empty)
-    }
+  Seq("jar", "file", "archive").map { key =>
+    conf.getOption(s"spark.app.initial.$key.urls").map { urls =>
+      Map(urls.split(",").map(url => (url, appStartTime)): _*)
+    }.getOrElse(Map.empty)
+  }
   updateDependencies(initialUserFiles, initialUserJars, initialUserArchives)
 
   // Plugins need to load using a class loader that includes the executor's user classpath.
@@ -265,8 +265,10 @@ private[spark] class Executor(
   }
 
   def launchTask(context: ExecutorBackend, taskDescription: TaskDescription): Unit = {
+    // 将 TaskDescription 封装为 TaskRunner
     val tr = new TaskRunner(context, taskDescription, plugins)
     runningTasks.put(taskDescription.taskId, tr)
+    // 执行 TaskRunner.run()
     threadPool.execute(tr)
     if (decommissioned) {
       log.error(s"Launching a task while in decommissioned state.")
@@ -303,9 +305,10 @@ private[spark] class Executor(
    * Function to kill the running tasks in an executor.
    * This can be called by executor back-ends to kill the
    * tasks instead of taking the JVM down.
+   *
    * @param interruptThread whether to interrupt the task thread
    */
-  def killAllTasks(interruptThread: Boolean, reason: String) : Unit = {
+  def killAllTasks(interruptThread: Boolean, reason: String): Unit = {
     runningTasks.keys().asScala.foreach(t =>
       killTask(t, interruptThread = interruptThread, reason = reason))
   }
@@ -344,9 +347,9 @@ private[spark] class Executor(
   }
 
   class TaskRunner(
-      execBackend: ExecutorBackend,
-      private val taskDescription: TaskDescription,
-      private val plugins: Option[PluginContainer])
+                    execBackend: ExecutorBackend,
+                    private val taskDescription: TaskDescription,
+                    private val plugins: Option[PluginContainer])
     extends Runnable {
 
     val taskId = taskDescription.taskId
@@ -366,7 +369,9 @@ private[spark] class Executor(
     @GuardedBy("TaskRunner.this")
     private var finished = false
 
-    def isFinished: Boolean = synchronized { finished }
+    def isFinished: Boolean = synchronized {
+      finished
+    }
 
     /** How much the JVM process has spent in GC when the task starts to run. */
     @volatile var startGCTime: Long = _
@@ -405,10 +410,10 @@ private[spark] class Executor(
     }
 
     /**
-     *  Utility function to:
+     * Utility function to:
      *    1. Report executor runtime and JVM gc time if possible
-     *    2. Collect accumulator updates
-     *    3. Set the finished flag to true and clear current thread's interrupt status
+     *       2. Collect accumulator updates
+     *       3. Set the finished flag to true and clear current thread's interrupt status
      */
     private def collectAccumulatorsAndResetStatusOnFailure(taskStartTimeNs: Long) = {
       // Report executor runtime and JVM gc time
@@ -434,7 +439,10 @@ private[spark] class Executor(
       threadId = Thread.currentThread.getId
       Thread.currentThread.setName(threadName)
       val threadMXBean = ManagementFactory.getThreadMXBean
+
+      // 1 创建TaskMemoryManager
       val taskMemoryManager = new TaskMemoryManager(env.memoryManager, taskId)
+
       val deserializeStartTimeNs = System.nanoTime()
       val deserializeStartCpuTime = if (threadMXBean.isCurrentThreadCpuTimeSupported) {
         threadMXBean.getCurrentThreadCpuTime
@@ -452,9 +460,10 @@ private[spark] class Executor(
         // Must be set before updateDependencies() is called, in case fetching dependencies
         // requires access to properties contained within (e.g. for access control).
         Executor.taskDeserializationProps.set(taskDescription.properties)
-
         updateDependencies(
           taskDescription.addedFiles, taskDescription.addedJars, taskDescription.addedArchives)
+
+        // 2 反序列化 Task 可能是 ShuffleMapTask | ResultTask
         task = ser.deserialize[Task[Any]](
           taskDescription.serializedTask, Thread.currentThread.getContextClassLoader)
         task.localProperties = taskDescription.properties
@@ -489,6 +498,8 @@ private[spark] class Executor(
           threadMXBean.getCurrentThreadCpuTime
         } else 0L
         var threwException = true
+
+        // 3 执行 Task 并获取返回值
         val value = Utils.tryWithSafeFinally {
           val res = task.run(
             taskAttemptId = taskId,
@@ -540,6 +551,7 @@ private[spark] class Executor(
 
         val resultSer = env.serializer.newInstance()
         val beforeSerializationNs = System.nanoTime()
+        // 4 序列化
         val valueBytes = resultSer.serialize(value)
         val afterSerializationNs = System.nanoTime()
 
@@ -602,18 +614,26 @@ private[spark] class Executor(
         // Note: accumulator updates must be collected after TaskMetrics is updated
         val accumUpdates = task.collectAccumulatorUpdates()
         val metricPeaks = metricsPoller.getTaskMetricPeaks(taskId)
+
         // TODO: do not serialize value twice
+        // 5 将 Task 运行的结果封装为 DirectTaskResult
         val directResult = new DirectTaskResult(valueBytes, accumUpdates, metricPeaks)
         val serializedDirectResult = ser.serialize(directResult)
+        // 结果大小
         val resultSize = serializedDirectResult.limit()
 
         // directSend = sending directly back to the driver
+        // 6 判断 Task 运行结果的大小
         val serializedResult: ByteBuffer = {
+          // 如果 Task 结果大小大于 1G
           if (maxResultSize > 0 && resultSize > maxResultSize) {
             logWarning(s"Finished $taskName. Result is larger than maxResultSize " +
               s"(${Utils.bytesToString(resultSize)} > ${Utils.bytesToString(maxResultSize)}), " +
               s"dropping it.")
+            // 创建 IndirectTaskResult 并序列化
             ser.serialize(new IndirectTaskResult[Any](TaskResultBlockId(taskId), resultSize))
+
+            // 如果 Task 结果大小大于 128MB
           } else if (resultSize > maxDirectResultSize) {
             val blockId = TaskResultBlockId(taskId)
             env.blockManager.putBytes(
@@ -631,6 +651,8 @@ private[spark] class Executor(
         executorSource.SUCCEEDED_TASKS.inc(1L)
         setTaskFinishedAndClearInterruptStatus()
         plugins.foreach(_.onTaskSucceeded())
+        // 7 向 Driver 发送 StatusUpdate
+        // 调用 CoarseGrainedSchedulerBackend.receive()
         execBackend.statusUpdate(taskId, TaskState.FINISHED, serializedResult)
       } catch {
         case t: TaskKilledException =>
@@ -645,7 +667,7 @@ private[spark] class Executor(
           execBackend.statusUpdate(taskId, TaskState.KILLED, ser.serialize(reason))
 
         case _: InterruptedException | NonFatal(_) if
-            task != null && task.reasonIfKilled.isDefined =>
+          task != null && task.reasonIfKilled.isDefined =>
           val killReason = task.reasonIfKilled.getOrElse("unknown reason")
           logInfo(s"Executor interrupted and killed $taskName, reason: $killReason")
 
@@ -768,9 +790,9 @@ private[spark] class Executor(
    * if the supervised task never exits.
    */
   private class TaskReaper(
-      taskRunner: TaskRunner,
-      val interruptThread: Boolean,
-      val reason: String)
+                            taskRunner: TaskRunner,
+                            val interruptThread: Boolean,
+                            val reason: String)
     extends Runnable {
 
     private[this] val taskId: Long = taskRunner.taskId
@@ -786,8 +808,11 @@ private[spark] class Executor(
     override def run(): Unit = {
       setMDCForTask(taskRunner.taskName, taskRunner.mdcProperties)
       val startTimeNs = System.nanoTime()
+
       def elapsedTimeNs = System.nanoTime() - startTimeNs
+
       def timeoutExceeded(): Boolean = killTimeoutNs > 0 && elapsedTimeNs > killTimeoutNs
+
       try {
         // Only attempt to kill the task once. If interruptThread = false then a second kill
         // attempt would be a no-op and if interruptThread = true then it may not be safe or
@@ -915,9 +940,9 @@ private[spark] class Executor(
    * SparkContext. Also adds any new JARs we fetched to the class loader.
    */
   private def updateDependencies(
-      newFiles: Map[String, Long],
-      newJars: Map[String, Long],
-      newArchives: Map[String, Long]): Unit = {
+                                  newFiles: Map[String, Long],
+                                  newJars: Map[String, Long],
+                                  newArchives: Map[String, Long]): Unit = {
     lazy val hadoopConf = SparkHadoopUtil.get.newConfiguration(conf)
     synchronized {
       // Fetch missing dependencies

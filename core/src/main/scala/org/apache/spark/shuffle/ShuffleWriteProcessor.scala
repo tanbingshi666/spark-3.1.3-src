@@ -42,21 +42,26 @@ private[spark] class ShuffleWriteProcessor extends Serializable with Logging {
    * this task.
    */
   def write(
-      rdd: RDD[_],
-      dep: ShuffleDependency[_, _, _],
-      mapId: Long,
-      context: TaskContext,
-      partition: Partition): MapStatus = {
+             rdd: RDD[_],
+             dep: ShuffleDependency[_, _, _],
+             mapId: Long,
+             context: TaskContext,
+             partition: Partition): MapStatus = {
     var writer: ShuffleWriter[Any, Any] = null
     try {
       val manager = SparkEnv.get.shuffleManager
+      // 1 获取 shuffle writer 默认为 SortShuffleWriter
       writer = manager.getWriter[Any, Any](
         dep.shuffleHandle,
         mapId,
         context,
         createMetricsReporter(context))
+      // 3 执行 shuffle writer
       writer.write(
+        // 2 执行 shuffle reader 和业务逻辑
         rdd.iterator(partition, context).asInstanceOf[Iterator[_ <: Product2[Any, Any]]])
+
+      // 4 返回执行 Task 结果 MapStatus
       writer.stop(success = true).get
     } catch {
       case e: Exception =>

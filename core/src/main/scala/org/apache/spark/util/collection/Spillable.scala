@@ -46,17 +46,19 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
 
   // Called by subclasses every time a record is read
   // It's used for checking spilling frequency
-  protected def addElementsRead(): Unit = { _elementsRead += 1 }
+  protected def addElementsRead(): Unit = {
+    _elementsRead += 1
+  }
 
   // Initial threshold for the size of a collection before we start tracking its memory usage
   // For testing only
   private[this] val initialMemoryThreshold: Long =
-    SparkEnv.get.conf.get(SHUFFLE_SPILL_INITIAL_MEM_THRESHOLD)
+  SparkEnv.get.conf.get(SHUFFLE_SPILL_INITIAL_MEM_THRESHOLD)
 
   // Force this collection to spill when there are this many elements in memory
   // For testing only
   private[this] val numElementsForceSpillThreshold: Int =
-    SparkEnv.get.conf.get(SHUFFLE_SPILL_NUM_ELEMENTS_FORCE_SPILL_THRESHOLD)
+  SparkEnv.get.conf.get(SHUFFLE_SPILL_NUM_ELEMENTS_FORCE_SPILL_THRESHOLD)
 
   // Threshold for this collection's size in bytes before we start tracking its memory usage
   // To avoid a large number of small spills, initialize this to a value orders of magnitude > 0
@@ -75,16 +77,21 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
    * Spills the current in-memory collection to disk if needed. Attempts to acquire more
    * memory before spilling.
    *
-   * @param collection collection to spill to disk
+   * @param collection    collection to spill to disk
    * @param currentMemory estimated size of the collection in bytes
    * @return true if `collection` was spilled to disk; false otherwise
    */
   protected def maybeSpill(collection: C, currentMemory: Long): Boolean = {
     var shouldSpill = false
+    // 1 判断读取数据是否可以整除 32 和当前 Map、Buffer 内存大小是否大于等于 5MB
     if (elementsRead % 32 == 0 && currentMemory >= myMemoryThreshold) {
       // Claim up to double our current memory from the shuffle memory pool
+      // 如果满足上述条件 则 Map、Buffer 扩容
+      // 假设 currentMemory = 12MB 则 amountToRequest = 19MB
       val amountToRequest = 2 * currentMemory - myMemoryThreshold
+      // 申请 19MB 资源
       val granted = acquireMemory(amountToRequest)
+      // 如果申请的资源小于 7MB 则需要溢写磁盘
       myMemoryThreshold += granted
       // If we were granted too little memory to grow further (either tryToAcquire returned 0,
       // or we already had more memory than myMemoryThreshold), spill the current collection
@@ -95,6 +102,8 @@ private[spark] abstract class Spillable[C](taskMemoryManager: TaskMemoryManager)
     if (shouldSpill) {
       _spillCount += 1
       logSpillage(currentMemory)
+      // 2 执行 Map | Buffer 溢写磁盘并生成一个临时文件
+      // 需要注意的是 默认先数据写入输出流 再判断是否达到阈值 (默认 10000) 最后在 flush 磁盘
       spill(collection)
       _elementsRead = 0
       _memoryBytesSpilled += currentMemory
